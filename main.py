@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
 import string 
 import numpy as np
 
@@ -8,77 +9,131 @@ from sklearn.model_selection import train_test_split
 #encoding and decoding function
 def encode(text):
     res = []
-    for c in text:
-        res.append(ord(c))
+
+    text = text.split()
+    for word in text:
+        res.append(word_id_dict.get(word))
+    
     return res
 
 def decode(token):
     res = ""
-    for c in token:
-        res += chr(c)
+
+    for id in token:
+        res += (id_word_dict.get(id) + " ")
     return res
 
+#reading data
 with open("data/input.txt", "r", encoding="utf-8") as f:
     text = f.read()
 
-X = np.array(encode(text)[:-1])
-y = np.array(encode(text)[1:])
+#preserving a copy of text
+data = text
+
+#split words into text into words
+text = text.split()
+
+#assigning words to unique id
+id = 0
+word_id_dict = {}
+for w in text:
+    if word_id_dict.get(w) == None:
+        word_id_dict[w] = id
+    else:
+        continue
+    
+    id += 1
+
+id_word_dict = {value: key for key, value in word_id_dict.items()}
+
+#making the datasets
+X = np.array(encode(data)[:-1])
+y = np.array(encode(data)[1:])
 
 X_train, X_temp, y_train, y_temp = train_test_split(
     X, y,
     test_size=0.30,
+    shuffle=False
 )
 
 X_val, X_test, y_val, y_test = train_test_split(
     X_temp, y_temp,
-    test_size=0.50
+    test_size=0.50,
+    shuffle=False
 )
 
-X_train = torch.tensor(X_train).float().unsqueeze(1)
-X_val = torch.tensor(X_val).float().unsqueeze(1)
-X_test = torch.tensor(X_test).float().unsqueeze(1)
+#turning the data into tensors
+X_train = torch.tensor(X_train).long()
+X_val = torch.tensor(X_val).long()
+X_test = torch.tensor(X_test).long()
 
-y_train = torch.tensor(y_train)
-y_val = torch.tensor(y_val)
-y_test = torch.tensor(y_test)
+y_train = torch.tensor(y_train).long()
+y_val = torch.tensor(y_val).long()
+y_test = torch.tensor(y_test).long()
 
+#model info
+#upgrade to embedding
+vocab_size = len(word_id_dict)
 model = nn.Sequential(
-    nn.Linear(1,100),
+    nn.Embedding(vocab_size,32),
+    nn.Linear(32,100),
     nn.ReLU(),
-    nn.Linear(100, 128)
+    nn.Linear(100, vocab_size)
 )
 
 loss_fn = nn.CrossEntropyLoss()
 
 optimiser = torch.optim.Adam(
     model.parameters(),
-    lr=0.01
+    lr=0.001
 )
 
-for epoch in range(1000):
+# Creating the training dataset
+train_dataset = TensorDataset(X_train, y_train)
+
+# Creating the DataLoader
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=128,
+    shuffle=True
+)
+
+#training loop
+for epoch in range(10):
 
     model.train()
 
-    prediction = model(X_train)
+    total_loss = 0
 
-    loss = loss_fn(prediction, y_train)
+    # Process one batch at a time
+    for X_batch, y_batch in train_loader:
 
-    optimiser.zero_grad()
+        # Forward pass
+        prediction = model(X_batch)
 
-    loss.backward()
+        # Calculate loss
+        loss = loss_fn(prediction, y_batch)
 
-    optimiser.step()
+        # Backpropagation
+        optimiser.zero_grad()
+        loss.backward()
+        optimiser.step()
 
-    # Check validation performance (no learning)
+        total_loss += loss.item() * len(X_batch)
+
+# Average training loss across the entire epoch
+    avg_train_loss = total_loss / len(train_dataset)
+
+    # Validation
     model.eval()
 
     with torch.no_grad():
+
         val_prediction = model(X_val)
         val_loss = loss_fn(val_prediction, y_val)
 
-    if (epoch + 1) % 100 == 0:
-        print(
-            f"Epoch {epoch+1} | "
-            f"Train Loss: {loss.item():.4f} | "
-            f"Validation Loss: {val_loss.item():.4f}"
-        )
+    print(
+        f"Epoch {epoch+1} | "
+        f"Train Loss: {avg_train_loss:.4f} | "
+        f"Validation Loss: {val_loss.item():.4f}"
+    )

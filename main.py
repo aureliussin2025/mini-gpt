@@ -137,3 +137,59 @@ for epoch in range(10):
         f"Train Loss: {avg_train_loss:.4f} | "
         f"Validation Loss: {val_loss.item():.4f}"
     )
+
+#actual bot function
+def generate(start_word, total_num_of_words):
+    
+    output = [start_word]
+
+    model.eval()
+
+    with torch.no_grad():
+    
+        for i in range(total_num_of_words):
+
+            current_word = torch.tensor(encode(start_word))
+
+            logits = model(current_word)
+
+            probabilities = torch.softmax(logits, dim=-1)
+
+            next_word_id = torch.multinomial(probabilities, num_samples=1)
+
+            next_word = id_word_dict[next_word_id.item()]
+
+            output.append(next_word)
+
+            start_word = next_word
+
+    return " ".join(output)
+
+print(generate("I", 4))
+
+#generate fixede
+def generate_fixed(start_word, total_num_of_words):
+    
+    output = [start_word]
+
+    model.eval()
+
+    with torch.no_grad():
+    
+        for i in range(total_num_of_words):
+
+            current_word = torch.tensor(encode(start_word))
+
+            logits = model(current_word)
+
+            next_word_id = torch.argmax(logits)
+
+            next_word = id_word_dict[next_word_id.item()]
+
+            output.append(next_word)
+
+            start_word = next_word
+
+    return " ".join(output)
+
+print(generate_fixed("I", 4))

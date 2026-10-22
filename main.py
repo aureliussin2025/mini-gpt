@@ -6,49 +6,129 @@ import numpy as np
 
 from sklearn.model_selection import train_test_split
 
-#encoding and decoding function
-def encode(text):
-    res = []
+#refacor - tokenise,eccoding,decoding
+"""
+further thinking:
+i need to create a function to split up the text block properly (puncutation inclusive)
+
+i need to first create the word_id_dict and the id_word dict
+through this process, i will have to split up the input
+
+then i will encode the text
+this means i will take in a tokens
+split it up
+tokenise each word
+
+for decoding
+the input will be an list of integers
+i will need to use id_word_dict, to reverse engineer the integers into words
+from there i will join
+i must take note that for punctuations, i should remove the space between the 
+punctuation and the previous word
+
+this means i need:
+
+split function - this will be known as tokenising
+encoding function
+decoding function
+function to create the word_id_dict (together with the id_word_dict)
+"""
+
+#split_txt/toeknise
+def tokenise(text):
+    token = []
+    punctuation_list = "!,?:.;"
 
     text = text.split()
-    for word in text:
-        res.append(word_id_dict.get(word))
+
+    for w in text:
+        if w[-1] in punctuation_list:
+            
+            token.append(w[:-1])
+            token.append(w[-1:])
+
+        else:
+            token.append(w)
+
+    return token
+
+
+def create_vocab(token):
+    id = 0
+    word_id_dict = {}
+
+    for w in token:
+
+        if word_id_dict.get(w) == None:
+            word_id_dict[w] = id
+            id += 1
+
+    id_word_dict = {value: key for key, value in word_id_dict.items()}
+
+    return word_id_dict, id_word_dict
+
+def encode(token):
+    encoded_list = []
+
+    for t in token:
+        encoded_list.append(word_id_dict[t])
+
+    return encoded_list
+
+def decode(encoded_list):
+    decoded_list = ""
     
-    return res
+    for id in encoded_list:
+        decoded_list += (id_word_dict.get(id) + " ")
+    return decoded_list
 
-def decode(token):
-    res = ""
-
-    for id in token:
-        res += (id_word_dict.get(id) + " ")
-    return res
 
 #reading data
 with open("data/input.txt", "r", encoding="utf-8") as f:
     text = f.read()
 
-#preserving a copy of text
-data = text
+#tokenising text, split text into a list of words
+tokens = tokenise(text)
 
-#split words into text into words
-text = text.split()
+#creating vocab_list
+word_id_dict, id_word_dict = create_vocab(tokens)
 
-#assigning words to unique id
-id = 0
-word_id_dict = {}
-for w in text:
-    if word_id_dict.get(w) == None:
-        word_id_dict[w] = id
-    else:
-        continue
-    
-    id += 1
-
-id_word_dict = {value: key for key, value in word_id_dict.items()}
+#encoding the text, convert list of words into ids
+encoded_tokens = encode(tokens)
 
 #making the datasets
-X = np.array(encode(data)[:-1])
-y = np.array(encode(data)[1:])
+"""
+first, we need to set a context size
+say context size = 3
+X will need to contain 123, 234, 345,...
+y will need to contain 4,   5,   6
+
+possible approach is to loop through encoded_tokens
+slice into 4 elements
+further slice into 3 and 1
+then increment
+"""
+#setting context_size
+context_size = 3
+
+#setting up datasets
+X = []
+y = []
+
+#implementing sliding window to allow for context
+for i in range(len(encoded_tokens) - context_size):
+
+    window_size = context_size + 1
+
+    #slicing into 4 elements
+    window_of_encoded_tokens = encoded_tokens[i:i + window_size]
+    
+    #further slicing to 3 and 1
+    X.append(window_of_encoded_tokens[:-1])
+    y.append(window_of_encoded_tokens[-1])
+
+X = np.array(X)
+y = np.array(y)
 
 X_train, X_temp, y_train, y_temp = train_test_split(
     X, y,
@@ -76,7 +156,8 @@ y_test = torch.tensor(y_test).long()
 vocab_size = len(word_id_dict)
 model = nn.Sequential(
     nn.Embedding(vocab_size,32),
-    nn.Linear(32,100),
+    nn.Flatten(start_dim=1),
+    nn.Linear(32 * context_size, 100),
     nn.ReLU(),
     nn.Linear(100, vocab_size)
 )
@@ -97,6 +178,35 @@ train_loader = DataLoader(
     batch_size=128,
     shuffle=True
 )
+
+#actual bot function
+def generate(start_words, total_num_of_words):
+    
+    output = [start_words]
+
+    tokenised_start_words = tokenise(start_words)
+
+    model.eval()
+
+    with torch.no_grad():
+    
+        for i in range(total_num_of_words):
+
+            current_words = torch.tensor([encode(tokenised_start_words)])
+
+            logits = model(current_words)
+
+            probabilities = torch.softmax(logits, dim=-1)
+
+            next_word_id = torch.multinomial(probabilities, num_samples=1)
+
+            next_word = id_word_dict[next_word_id.item()]
+
+            output.append(next_word)
+
+            tokenised_start_words = tokenised_start_words[1:] + [next_word]
+
+    return " ".join(output)
 
 #training loop
 for epoch in range(10):
@@ -137,59 +247,37 @@ for epoch in range(10):
         f"Train Loss: {avg_train_loss:.4f} | "
         f"Validation Loss: {val_loss.item():.4f}"
     )
+    print("\n")
+    print(generate("I am a", 20))
 
-#actual bot function
-def generate(start_word, total_num_of_words):
+
+# print(generate("I am a", 20))
+
+# #generate fixed
+# def generate_fixed(start_words, total_num_of_words):
     
-    output = [start_word]
+#     output = [start_words]
 
-    model.eval()
+#     tokenised_start_words = tokenise(start_words)
 
-    with torch.no_grad():
+#     model.eval()
+
+#     with torch.no_grad():
     
-        for i in range(total_num_of_words):
+#         for i in range(total_num_of_words):
 
-            current_word = torch.tensor(encode(start_word))
+#             current_word = torch.tensor(encode(tokenised_start_words))
 
-            logits = model(current_word)
+#             logits = model(current_word)
 
-            probabilities = torch.softmax(logits, dim=-1)
+#             next_word_id = torch.argmax(logits)
 
-            next_word_id = torch.multinomial(probabilities, num_samples=1)
+#             next_word = id_word_dict[next_word_id.item()]
 
-            next_word = id_word_dict[next_word_id.item()]
+#             output.append(next_word)
 
-            output.append(next_word)
+#             tokenised_start_words = tokenised_start_words[1:] + [next_word]
 
-            start_word = next_word
+#     return " ".join(output)
 
-    return " ".join(output)
-
-print(generate("I", 4))
-
-#generate fixede
-def generate_fixed(start_word, total_num_of_words):
-    
-    output = [start_word]
-
-    model.eval()
-
-    with torch.no_grad():
-    
-        for i in range(total_num_of_words):
-
-            current_word = torch.tensor(encode(start_word))
-
-            logits = model(current_word)
-
-            next_word_id = torch.argmax(logits)
-
-            next_word = id_word_dict[next_word_id.item()]
-
-            output.append(next_word)
-
-            start_word = next_word
-
-    return " ".join(output)
-
-print(generate_fixed("I", 4))
+# print(generate_fixed("I am a", 4))

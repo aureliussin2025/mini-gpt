@@ -7,10 +7,14 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 
 from tokeniser import tokenise, create_vocab, encode, decode
-from generate import generate, generate_fixed
+from generate import generate#, generate_fixed
 from dataset import create_X_and_y, create_datasets, create_train_loader
 from model import create_model
 from train import train_model
+
+#seed implementation, to keep things repeatable
+SEED = 42
+torch.maunual_seed(SEED)
 
 #reading data
 with open("data/input.txt", "r", encoding="utf-8") as f:
@@ -44,7 +48,8 @@ train_model(
     train_loader,
     X_val, 
     y_val, 
-    epochs=10
+    epochs=10,
+    patience=3
 )
 
 
@@ -62,8 +67,8 @@ print("Missing tokens:", [
 
 #generate text
 
-print(generate("I am a", 20, model, word_id_dict, id_word_dict))
+print(generate("I am a", 20, model, word_id_dict, id_word_dict, temperature=1.0))
 
-print(generate("I am a", 20, model, word_id_dict, id_word_dict))
+print(generate("I am a", 20, model, word_id_dict, id_word_dict, temperature=0.5))
 
-print(generate("I am a", 20, model, word_id_dict, id_word_dict))
+print(generate("I am a", 20, model, word_id_dict, id_word_dict, temperature=2.0))

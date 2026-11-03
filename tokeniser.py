@@ -164,14 +164,17 @@ class BPETokenizer:
 
 def benchmark(max_chars=None):
     """Compare all modes on the same text, excluding file I/O from timings."""
+
+    #benchmark against dataset
     input_path = Path(__file__).parent / "data" / "input.txt"
-    
+
     with input_path.open(encoding="utf-8") as input_file:
         if max_chars is None:
             text = input_file.read()            
         else:
-            input_file.read(max_chars)
+            text = input_file.read(max_chars)
 
+    #
     print(f"Dataset: {input_path}", flush=True)
     print(f"Characters: {len(text):,} | UTF-8 bytes: {len(text.encode('utf-8')):,}")
     print("Target vocabulary: 2,048 | One timed run per configuration")

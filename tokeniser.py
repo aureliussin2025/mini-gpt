@@ -151,14 +151,14 @@ class BPETokenizer:
     """
     decoding same as before
     """
-    def decode(self, token_ids):
+    def decode(self, token_ids, errors="strict"):
 
         """Reconstruct text; arbitrary byte IDs may not form valid UTF-8."""
         if not self._trained:
             raise RuntimeError("Call train() before decode()")
         symbols = [self.id_to_token[token_id] for token_id in token_ids]
         if self.representation == "byte":
-            return b"".join(symbols).decode("utf-8")
+            return b"".join(symbols).decode("utf-8", errors=errors)
         return "".join(symbols)
 
 

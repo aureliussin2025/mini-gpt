@@ -1,74 +1,62 @@
+import argparse
+from pathlib import Path
+import sys
+
 import torch
-import torch.nn as nn
-from torch.utils.data import TensorDataset, DataLoader
-import string 
-import numpy as np
+from torch.utils.data import DataLoader
 
-from sklearn.model_selection import train_test_split
-
-from tokeniser import tokenise, create_vocab, encode, decode
-from generate import generate#, generate_fixed
-from dataset import create_X_and_y, create_datasets, create_train_loader
-from model import create_model
-from train import train_model
-
-#seed implementation, to keep things repeatable
-SEED = 42
-torch.maunual_seed(SEED)
-
-#reading data
-with open("data/input.txt", "r", encoding="utf-8") as f:
-    text = f.read()
-
-#tokenising text, split text into a list of words
-tokens = tokenise(text)
-
-#creating vocab_list
-word_id_dict, id_word_dict = create_vocab(tokens)
-
-#encoding the text, convert list of words into ids
-encoded_tokens = encode(tokens, word_id_dict)
-
-#creating datasets
-X, y = create_X_and_y(encoded_tokens)
-
-#splitting datasets
-X_train, X_val, X_test, y_train, y_val, y_test = create_datasets(X, y)
-
-#creating th nn model
-vocab_size = len(word_id_dict)
-model = create_model(vocab_size)
-
-#training the model
-train_dataset, train_loader = create_train_loader(X_train, y_train, batch_size=128)
-
-train_model(
-    model,
-    train_dataset,
-    train_loader,
-    X_val, 
-    y_val, 
-    epochs=10,
-    patience=3
-)
+from dataset import prepare_bpe_datasets
+from generate import generate
+from model import MiniGPT
+from train import DEFAULT_CHECKPOINT, evaluate, train_model
 
 
-print("I in vocabulary:", "I" in word_id_dict)
-print("i in vocabulary:", "i" in word_id_dict)
-print("am in vocabulary:", "am" in word_id_dict)
-print("a in vocabulary:", "a" in word_id_dict)
+def main():
+    parser = argparse.ArgumentParser(description="Train the BPE Transformer")
+    parser.add_argument("--max-chars", type=int)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    args = parser.parse_args()
+    if args.max_chars is not None and args.max_chars <= 0:
+        parser.error("--max-chars must be positive")
+    if args.epochs <= 0:
+        parser.error("--epochs must be positive")
 
-print("Starting tokens:", tokenise("I am a"))
-print("Missing tokens:", [
-    word for word in tokenise("I am a")
-    if word not in word_id_dict
-])
+    # Legacy Windows output encodings may not support generated Unicode.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
+
+    seed = 42
+    context_size = 32
+    batch_size = 128
+    torch.manual_seed(seed)
+    path = Path(__file__).parent / "data" / "input.txt"
+    with path.open(encoding="utf-8") as source:
+        text = source.read() if args.max_chars is None else source.read(args.max_chars)
+    scope = "full dataset" if args.max_chars is None else "sample run"
+    print(f"{scope}: {len(text):,} characters", flush=True)
+    tokenizer, (train_data, val_data, test_data) = prepare_bpe_datasets(
+        text, context_size
+    )
+    print(f"BPE vocabulary: {len(tokenizer.vocab):,}; context: {context_size}", flush=True)
+    train_loader = DataLoader(
+        train_data, batch_size=batch_size, shuffle=True,
+        generator=torch.Generator().manual_seed(seed),
+    )
+    val_loader = DataLoader(val_data, batch_size=batch_size)
+    test_loader = DataLoader(test_data, batch_size=batch_size)
+    model = MiniGPT(len(tokenizer.vocab), attention_type="multi")
+    train_model(
+        model, train_loader, val_loader, tokenizer, context_size,
+        epochs=args.epochs, patience=3, checkpoint_path=args.checkpoint,
+    )
+    print(f"Test Loss: {evaluate(model, test_loader):.4f}")
+    for temperature in (1.0, 0.5, 2.0):
+        print(f"Temperature {temperature}:")
+        print(generate(
+            "I am a", 20, model, tokenizer, context_size, temperature
+        ))
 
 
-#generate text
-
-print(generate("I am a", 20, model, word_id_dict, id_word_dict, temperature=1.0))
-
-print(generate("I am a", 20, model, word_id_dict, id_word_dict, temperature=0.5))
-
-print(generate("I am a", 20, model, word_id_dict, id_word_dict, temperature=2.0))
+if __name__ == "__main__":
+    main()

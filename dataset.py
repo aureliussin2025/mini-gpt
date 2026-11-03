@@ -3,6 +3,29 @@ from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 
+from tokeniser import BPETokenizer
+
+
+def prepare_bpe_datasets(text, context_size=32):
+    """Fit BPE on the training text and create windows within each split."""
+    if not 1 <= context_size <= 32:
+        raise ValueError("context_size must be between 1 and 32")
+    train_end = int(len(text) * 0.70)
+    val_end = int(len(text) * 0.85)
+    splits = (text[:train_end], text[train_end:val_end], text[val_end:])
+    tokenizer = BPETokenizer("byte", pre_tokenize=True).train(splits[0])
+    datasets = []
+    for name, split in zip(("training", "validation", "test"), splits):
+        ids = tokenizer.encode(split)
+        if len(ids) <= context_size:
+            raise ValueError(f"The {name} split is too short for context_size={context_size}")
+        contexts, targets = create_X_and_y(ids, context_size)
+        datasets.append(TensorDataset(
+            torch.tensor(contexts, dtype=torch.long),
+            torch.tensor(targets, dtype=torch.long),
+        ))
+    return tokenizer, tuple(datasets)
+
 #sliding window
 def create_X_and_y(encoded_tokens, context_size=3):
     #setting up datasets

@@ -1,78 +1,127 @@
+import math
+from pathlib import Path
+
 import torch
-import torch.nn as nn
+from torch import nn
+
+from model import MiniGPT, MultiHeadAttention
+from tokeniser import BPETokenizer
 
 
-def train_model(model, train_dataset, train_loader, X_val, y_val, epochs, patience):
+DEFAULT_CHECKPOINT = Path(__file__).parent / "best_bpe_transformer.pth"
 
-    best_model_validation = float('inf')
 
-    epochs_without_improvement = 0
+def evaluate(model, loader):
+    """Compute sample-weighted cross-entropy without modifying model weights."""
+    was_training = model.training
+    model.eval()
+    total_loss = 0.0
+    count = 0
+    device = next(model.parameters()).device
+    with torch.inference_mode():
+        for contexts, targets in loader:
+            contexts, targets = contexts.to(device), targets.to(device)
+            total_loss += nn.functional.cross_entropy(
+                model(contexts), targets, reduction="sum"
+            ).item()
+            count += targets.numel()
+    model.train(was_training)
+    if count == 0:
+        raise ValueError("Evaluation loader must not be empty")
+    return total_loss / count
 
-    loss_fn = nn.CrossEntropyLoss()
 
-    optimiser = torch.optim.Adam(
-        model.parameters(),
-        lr=0.001
+def save_checkpoint(path, model, tokenizer, context_size, epoch, val_loss):
+    attention_type = (
+        "multi" if isinstance(model.attention_block, MultiHeadAttention) else "single"
     )
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "model_config": {
+            "vocab_size": len(tokenizer.vocab),
+            "attention_type": attention_type,
+        },
+        "context_size": context_size,
+        "tokenizer": {
+            "representation": tokenizer.representation,
+            "pre_tokenize": tokenizer.pre_tokenize,
+            "vocab": tokenizer.vocab,
+            "merges": tokenizer.merges,
+        },
+        "epoch": epoch,
+        "validation_loss": val_loss,
+    }, path)
 
-    # Training loop
-    for epoch in range(epochs):
 
+def load_checkpoint(path=DEFAULT_CHECKPOINT):
+    """Return a CPU model, tokenizer and training metadata, without retraining."""
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    model = MiniGPT(**checkpoint["model_config"])
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    state = checkpoint["tokenizer"]
+    tokenizer = BPETokenizer(state["representation"], state["pre_tokenize"])
+    tokenizer.vocab = state["vocab"]
+    tokenizer.id_to_token = {index: token for token, index in tokenizer.vocab.items()}
+    tokenizer.merges = state["merges"]
+    tokenizer._trained = True
+    metadata = {
+        key: checkpoint[key]
+        for key in ("model_config", "context_size", "epoch", "validation_loss")
+    }
+    return model, tokenizer, metadata
+
+
+def train_model(
+    model, train_loader, val_loader, tokenizer, context_size=32,
+    epochs=10, patience=3, checkpoint_path=DEFAULT_CHECKPOINT,
+):
+    """Train with early stopping and restore the best validation weights."""
+    if epochs <= 0 or patience <= 0:
+        raise ValueError("epochs and patience must be positive")
+    if len(train_loader.dataset) == 0 or len(val_loader.dataset) == 0:
+        raise ValueError("Training and validation datasets must not be empty")
+    best_loss = float("inf")
+    epochs_without_improvement = 0
+    optimiser = torch.optim.Adam(model.parameters(), lr=0.001)
+    device = next(model.parameters()).device
+
+    for epoch in range(1, epochs + 1):
         model.train()
-        total_loss = 0
-
-        for X_batch, y_batch in train_loader:
-
-            # Forward pass
-            prediction = model(X_batch)
-
-            # Calculate loss
-            loss = loss_fn(prediction, y_batch)
-
-            # Backpropagation
+        total_loss = 0.0
+        count = 0
+        for contexts, targets in train_loader:
+            contexts, targets = contexts.to(device), targets.to(device)
             optimiser.zero_grad()
+            loss = nn.functional.cross_entropy(model(contexts), targets)
+            if not torch.isfinite(loss):
+                raise ValueError("Training loss is not finite")
             loss.backward()
             optimiser.step()
+            total_loss += loss.item() * len(targets)
+            count += len(targets)
 
-            total_loss += loss.item() * len(X_batch)
-
-        avg_train_loss = total_loss / len(train_dataset)
-
-        # Validation
-        model.eval()
-
-        with torch.no_grad():
-            val_prediction = model(X_val)
-            val_loss = loss_fn(val_prediction, y_val)
-
+        val_loss = evaluate(model, val_loader)
+        if not math.isfinite(val_loss):
+            raise ValueError("Validation loss is not finite")
         print(
-            f"Epoch {epoch+1} | "
-            f"Train Loss: {avg_train_loss:.4f} | "
-            f"Validation Loss: {val_loss.item():.4f}"
+            f"Epoch {epoch} | Train Loss: {total_loss / count:.4f} | "
+            f"Validation Loss: {val_loss:.4f}", flush=True,
         )
-
-        #state saving process
-        if best_model_validation > val_loss.item():
+        if val_loss < best_loss:
+            best_loss = val_loss
             epochs_without_improvement = 0
-            best_model_validation = val_loss.item()
-
-            #save state with torch.save
-            torch.save(model.state_dict(), "best_model.pth")
-
-            #indicator when there is a new best model
-            print(f"New best model saved at Epoch {epoch+1}")
+            save_checkpoint(
+                checkpoint_path, model, tokenizer, context_size, epoch, val_loss
+            )
         else:
             epochs_without_improvement += 1
-
             if epochs_without_improvement >= patience:
-                print(f"Early stopping at Epoch {epoch+1}")
+                print(f"Early stopping at epoch {epoch}")
                 break
 
-
-
-    model.load_state_dict(
-        torch.load("best_model.pth", weights_only=True)   
-    )
-
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    print(f"Restored best weights from epoch {checkpoint['epoch']}")
     return model
-        

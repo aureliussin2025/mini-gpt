@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from dataset import create_X_and_y
 from model import MiniGPT
 from tokeniser import BPETokenizer
+from train import select_device
 
 
 def validation_loss(model, loader):
@@ -19,8 +20,10 @@ def validation_loss(model, loader):
     model.eval()
     total_loss = 0.0
     total_targets = 0
+    device = next(model.parameters()).device
     with torch.inference_mode():
         for contexts, targets in loader:
+            contexts, targets = contexts.to(device), targets.to(device)
             total_loss += nn.functional.cross_entropy(
                 model(contexts), targets, reduction="sum"
             ).item()
@@ -32,19 +35,23 @@ def validation_loss(model, loader):
 
 
 def forward_time_ms(model, contexts, repeats=100, warmup=10):
-    """Mean CPU inference latency per batch, excluding data loading."""
+    """Mean inference latency per batch, excluding data loading and transfer."""
     if repeats <= 0 or warmup < 0:
         raise ValueError("repeats must be positive and warmup non-negative")
-    if contexts.device.type != "cpu" or next(model.parameters()).device.type != "cpu":
-        raise ValueError("This benchmark measures CPU inference only")
+    device = next(model.parameters()).device
+    contexts = contexts.to(device)
     was_training = model.training
     model.eval()
     with torch.inference_mode():
         for _ in range(warmup):
             model(contexts)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
         start = time.perf_counter()
         for _ in range(repeats):
             model(contexts)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
         elapsed = time.perf_counter() - start
     model.train(was_training)
     return elapsed * 1000 / repeats
@@ -72,12 +79,13 @@ def prepare_data(text, context_size):
     return datasets[0], datasets[1], len(tokenizer.vocab)
 
 
-def benchmark(text, epochs=3, batch_size=128, context_size=3, repeats=100, seed=42):
+def benchmark(text, epochs=3, batch_size=128, context_size=3, repeats=100, seed=42, device="cpu"):
+    device = select_device(device)
     train_data, val_data, vocab_size = prepare_data(text, context_size)
     val_loader = DataLoader(val_data, batch_size=batch_size)
     timing_batch = next(iter(val_loader))[0]
     print(
-        f"CPU | threads={torch.get_num_threads()} | seed={seed} | "
+        f"Device={device} | threads={torch.get_num_threads()} | seed={seed} | "
         f"epochs={epochs} | context={context_size} | batch={batch_size}\n"
         f"BPE vocabulary={vocab_size} | train windows={len(train_data)} | "
         f"validation windows={len(val_data)}\n"
@@ -87,7 +95,7 @@ def benchmark(text, epochs=3, batch_size=128, context_size=3, repeats=100, seed=
     results = []
     for attention_type in ("single", "multi"):
         torch.manual_seed(seed)
-        model = MiniGPT(vocab_size, attention_type=attention_type)
+        model = MiniGPT(vocab_size, attention_type=attention_type).to(device)
         # A separate generator gives both variants the same shuffled batches,
         # regardless of how many random values model initialisation consumes.
         loader = DataLoader(
@@ -100,6 +108,7 @@ def benchmark(text, epochs=3, batch_size=128, context_size=3, repeats=100, seed=
         for epoch in range(epochs):
             model.train()
             for contexts, targets in loader:
+                contexts, targets = contexts.to(device), targets.to(device)
                 optimiser.zero_grad()
                 loss = nn.functional.cross_entropy(model(contexts), targets)
                 loss.backward()
@@ -128,7 +137,12 @@ def main():
     parser.add_argument("--context-size", type=int, default=3)
     parser.add_argument("--repeats", type=int, default=100)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="cpu")
     args = parser.parse_args()
+    try:
+        select_device(args.device)
+    except ValueError as error:
+        parser.error(str(error))
     if min(args.max_chars, args.epochs, args.batch_size, args.repeats, args.threads) <= 0:
         parser.error("sample size, epochs, batch size, repeats and threads must be positive")
     if not 1 <= args.context_size <= 32:
@@ -138,7 +152,10 @@ def main():
     with path.open(encoding="utf-8") as source:
         text = source.read() if args.full_data else source.read(args.max_chars)
     print(f"Dataset: {path}\nCharacters: {len(text):,} (full={args.full_data})", flush=True)
-    benchmark(text, args.epochs, args.batch_size, args.context_size, args.repeats)
+    benchmark(
+        text, args.epochs, args.batch_size, args.context_size, args.repeats,
+        device=args.device,
+    )
 
 
 if __name__ == "__main__":

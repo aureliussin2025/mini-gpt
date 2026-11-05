@@ -11,6 +11,17 @@ from tokeniser import BPETokenizer
 DEFAULT_CHECKPOINT = Path(__file__).parent / "best_bpe_transformer.pth"
 
 
+def select_device(name="auto"):
+    """Prefer CUDA when available; fail clearly if explicitly requested."""
+    if name not in ("auto", "cpu", "cuda"):
+        raise ValueError("device must be 'auto', 'cpu', or 'cuda'")
+    if name == "auto":
+        name = "cuda" if torch.cuda.is_available() else "cpu"
+    if name == "cuda" and not torch.cuda.is_available():
+        raise ValueError("CUDA is unavailable. Enable a GPU runtime or use --device cpu.")
+    return torch.device(name)
+
+
 def evaluate(model, loader):
     """Compute sample-weighted cross-entropy without modifying model weights."""
     was_training = model.training
@@ -53,11 +64,13 @@ def save_checkpoint(path, model, tokenizer, context_size, epoch, val_loss):
     }, path)
 
 
-def load_checkpoint(path=DEFAULT_CHECKPOINT):
-    """Return a CPU model, tokenizer and training metadata, without retraining."""
+def load_checkpoint(path=DEFAULT_CHECKPOINT, device="cpu"):
+    """Load portably on CPU, then move the model to the selected device."""
+    device = select_device(device)
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     model = MiniGPT(**checkpoint["model_config"])
     model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device)
     model.eval()
     state = checkpoint["tokenizer"]
     tokenizer = BPETokenizer(state["representation"], state["pre_tokenize"])

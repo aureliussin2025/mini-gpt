@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from dataset import prepare_bpe_datasets
 from generate import generate
 from model import MiniGPT
-from train import DEFAULT_CHECKPOINT, evaluate, train_model
+from train import DEFAULT_CHECKPOINT, evaluate, select_device, train_model
 
 
 def main():
@@ -16,11 +16,16 @@ def main():
     parser.add_argument("--max-chars", type=int)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
     if args.max_chars is not None and args.max_chars <= 0:
         parser.error("--max-chars must be positive")
     if args.epochs <= 0:
         parser.error("--epochs must be positive")
+    try:
+        device = select_device(args.device)
+    except ValueError as error:
+        parser.error(str(error))
 
     # Legacy Windows output encodings may not support generated Unicode.
     if hasattr(sys.stdout, "reconfigure"):
@@ -30,6 +35,9 @@ def main():
     context_size = 32
     batch_size = 128
     torch.manual_seed(seed)
+    device_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
+    print(f"Device: {device} ({device_name})", flush=True)
+    print("Preparing BPE and datasets on CPU ...", flush=True)
     path = Path(__file__).parent / "data" / "input.txt"
     with path.open(encoding="utf-8") as source:
         text = source.read() if args.max_chars is None else source.read(args.max_chars)
@@ -45,7 +53,7 @@ def main():
     )
     val_loader = DataLoader(val_data, batch_size=batch_size)
     test_loader = DataLoader(test_data, batch_size=batch_size)
-    model = MiniGPT(len(tokenizer.vocab), attention_type="multi")
+    model = MiniGPT(len(tokenizer.vocab), attention_type="multi").to(device)
     train_model(
         model, train_loader, val_loader, tokenizer, context_size,
         epochs=args.epochs, patience=3, checkpoint_path=args.checkpoint,

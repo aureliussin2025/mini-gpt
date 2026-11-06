@@ -24,8 +24,9 @@ def validation_loss(model, loader):
     with torch.inference_mode():
         for contexts, targets in loader:
             contexts, targets = contexts.to(device), targets.to(device)
+            logits = model(contexts)
             total_loss += nn.functional.cross_entropy(
-                model(contexts), targets, reduction="sum"
+                logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), reduction="sum"
             ).item()
             total_targets += targets.numel()
     model.train(was_training)
@@ -110,19 +111,23 @@ def benchmark(text, epochs=3, batch_size=128, context_size=3, repeats=100, seed=
             for contexts, targets in loader:
                 contexts, targets = contexts.to(device), targets.to(device)
                 optimiser.zero_grad()
-                loss = nn.functional.cross_entropy(model(contexts), targets)
+                logits = model(contexts)
+                loss = nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
+                )
                 loss.backward()
                 optimiser.step()
             final_loss = validation_loss(model, val_loader)
             print(
                 f"{attention_type}: epoch {epoch + 1}/{epochs}, "
-                f"validation loss={final_loss:.4f}", flush=True,
+                f"validation CE/token={final_loss:.4f}", flush=True,
             )
         latency = forward_time_ms(model, timing_batch, repeats=repeats)
         parameters = sum(parameter.numel() for parameter in model.parameters())
         results.append((attention_type, parameters, latency, initial_loss, final_loss))
 
-    print("\nAttention   Parameters   Forward ms/batch   Initial val CE   Final val CE")
+    print("\nFull-sequence forward timing; validation CE is averaged over target tokens.")
+    print("Attention   Parameters   Forward ms/batch   Initial val CE   Final val CE")
     for mode, parameters, latency, initial, final in results:
         print(f"{mode:<10} {parameters:>10,} {latency:>18.3f} {initial:>16.4f} {final:>14.4f}")
     print("One seed/run; timings vary. Multi-head includes an extra output projection.")

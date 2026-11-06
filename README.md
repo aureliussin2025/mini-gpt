@@ -1,6 +1,6 @@
 # mini-gpt
 
-Train the four-head Transformer with byte BPE and 32-token contexts:
+Train the four-layer, four-head Transformer with byte BPE and 32-token contexts:
 
 ```powershell
 python main.py
@@ -16,6 +16,16 @@ Text is split sequentially 70/15/15 before fitting BPE on training text only.
 The vocabulary targets 2,048 tokens but may be smaller when no pairs remain.
 Training uses Adam (0.001), batch size 128, and early stopping with patience 3.
 The best validation weights are restored before one test-set evaluation.
+Training predicts the next token at every position: inputs `[a, b, c]` have
+targets `[b, c, d]`. With context 32, input chunks advance by 32 tokens within
+each split; incomplete final chunks are dropped without padding. Model outputs
+have shape `(batch, sequence_length, vocabulary_size)`. Cross-entropy is averaged
+over all target tokens, and generation samples only the final position's logits.
+
+Compared with earlier stride-1, last-token-only runs, each epoch now has fewer
+chunks and each chunk supervises 32 predictions. Epoch sizes, losses, and timings
+are not directly comparable with those earlier runs. Benchmark timing measures
+the full-sequence forward pass and validation loss is cross-entropy per token.
 Generation counts new BPE tokens, not words; malformed generated UTF-8 is
 displayed with replacement characters.
 
@@ -23,6 +33,10 @@ The default checkpoint is `best_bpe_transformer.pth`, containing model weights,
 model settings, context size, tokenizer vocabulary and merges, epoch, and
 validation loss. It does not resume optimiser state. The old `best_model.pth`
 format is not supported by the new loader and is left untouched.
+New checkpoints record `prediction_objective="all_positions"` and
+`window_stride=32` (the configured context size). Earlier BPE checkpoints load
+with `last_token_only` and stride 1 metadata; their recorded loss retains its
+original meaning. Parameter shapes are unchanged by all-position prediction.
 
 Load and generate without training:
 
@@ -39,6 +53,14 @@ print(generate(
 
 Run tests with `python -m pytest`. Importing `main` does not start training.
 The separate `benchmark_model.py` retains its fixed-epoch attention comparison.
+
+`MiniGPT` passes embeddings through four independent `TransformerBlock` instances.
+Each block contains layer normalisation, causal attention, and a 32 → 100 → 32
+MLP, with residual connections around attention and the MLP. Both single-head and
+four-head attention options use four blocks by default. `num_blocks` can be set
+explicitly when constructing a model. New checkpoints store the block count;
+older BPE checkpoints load as one-block models, preserving their predictions.
+Training a new four-block model does not expand an old checkpoint automatically.
 
 ## Google Colab GPU
 

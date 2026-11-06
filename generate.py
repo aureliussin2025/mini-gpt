@@ -24,7 +24,7 @@ def generate(
             context = torch.tensor(
                 [token_ids[-context_size:]], dtype=torch.long, device=device
             )
-            logits = model(context)
+            logits = model(context)[:, -1, :]
             probabilities = torch.softmax(logits / temperature, dim=-1)
             token_ids.append(torch.multinomial(probabilities, 1).item())
     model.train(was_training)

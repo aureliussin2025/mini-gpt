@@ -73,74 +73,53 @@ class MultiHeadAttention(nn.Module):
         return self.output_projection(attended)
 
 
-class MiniGPT(nn.Module):
-    def __init__(self, vocab_size, attention_type="single"):
+class TransformerBlock(nn.Module):
+    """Pre-normalised attention and MLP, each with a residual connection."""
+
+    def __init__(self, attention_type="multi"):
         super().__init__()
-
-        """
-        Embed the words in the vocab (all possible tokens)
-        give each token a distribution of 32 initially random number that are trainable
-        by back prop
-        """
-        self.embedding = nn.Embedding(vocab_size, 32)
-
-        """
-        positional embedding
-        give each of the 32 token positions another number(that can be learnt)
-        this is to differentiate tokens by position
-        """
-        self.position_embedding = nn.Embedding(32, 32)
-
-        """
-        layer normalisation
-        this normalises the number for stable training
-
-        ln1 is for before attention
-        ln2 is before mlp
-        """
         self.ln1 = nn.LayerNorm(32)
         self.ln2 = nn.LayerNorm(32)
-
         if attention_type == "single":
             self.attention_block = SingleHeadAttention(32)
         elif attention_type == "multi":
             self.attention_block = MultiHeadAttention(32, num_heads=4)
         else:
             raise ValueError("attention_type must be 'single' or 'multi'")
-
-        #32 splits to 100 and back to 32
-        # MLP
         self.mlp = nn.Sequential(
             nn.Linear(32, 100),
             nn.ReLU(),
-            nn.Linear(100, 32)
+            nn.Linear(100, 32),
         )
 
-        """
-        Convert the final 32-dimensional representation into
-        one prediction logit for each token in the vocabulary.
-        """
-        # Final prediction layer
+    def forward(self, x):
+        x = x + self.attention_block(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
+        return x
+
+
+class MiniGPT(nn.Module):
+    def __init__(self, vocab_size, attention_type="single", num_blocks=4):
+        super().__init__()
+        if isinstance(num_blocks, bool) or not isinstance(num_blocks, int) or num_blocks < 1:
+            raise ValueError("num_blocks must be a positive integer")
+        self.attention_type = attention_type
+        self.embedding = nn.Embedding(vocab_size, 32)
+        self.position_embedding = nn.Embedding(32, 32)
+
+        # Construct a new block each time: weights are not shared across layers.
+        self.blocks = nn.ModuleList([
+            TransformerBlock(attention_type) for _ in range(num_blocks)
+        ])
         self.output = nn.Linear(32, vocab_size)
 
     def forward(self, tokens):
-        #B, batch size. T, tokens per sequenec
-        B, T = tokens.shape
-
-        #generate positions from 0 to T-1
-        positions = torch.arange(T, device=tokens.device)
-
+        sequence_length = tokens.shape[1]
+        positions = torch.arange(sequence_length, device=tokens.device)
         x = self.embedding(tokens) + self.position_embedding(positions)
 
-        x = x + self.attention_block(self.ln1(x))
+        for block in self.blocks:
+            x = block(x)
 
-        x = x + self.mlp(self.ln2(x))
-
-        # Last token's representation predicts the next token
-        x = x[:, -1, :]
-
-        # Convert it into prediction scores for every vocabulary token
-        logits = self.output(x)
-
-        return logits
-        
+        # Each position predicts the next token using only its causal context.
+        return self.output(x)

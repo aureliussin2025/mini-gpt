@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from model import MiniGPT, MultiHeadAttention
+from model import MiniGPT
 from tokeniser import BPETokenizer
 
 
@@ -23,7 +23,7 @@ def select_device(name="auto"):
 
 
 def evaluate(model, loader):
-    """Compute sample-weighted cross-entropy without modifying model weights."""
+    """Compute cross-entropy per target token without modifying weights."""
     was_training = model.training
     model.eval()
     total_loss = 0.0
@@ -32,8 +32,9 @@ def evaluate(model, loader):
     with torch.inference_mode():
         for contexts, targets in loader:
             contexts, targets = contexts.to(device), targets.to(device)
+            logits = model(contexts)
             total_loss += nn.functional.cross_entropy(
-                model(contexts), targets, reduction="sum"
+                logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), reduction="sum"
             ).item()
             count += targets.numel()
     model.train(was_training)
@@ -43,16 +44,16 @@ def evaluate(model, loader):
 
 
 def save_checkpoint(path, model, tokenizer, context_size, epoch, val_loss):
-    attention_type = (
-        "multi" if isinstance(model.attention_block, MultiHeadAttention) else "single"
-    )
     torch.save({
         "model_state_dict": model.state_dict(),
         "model_config": {
             "vocab_size": len(tokenizer.vocab),
-            "attention_type": attention_type,
+            "attention_type": model.attention_type,
+            "num_blocks": len(model.blocks),
         },
         "context_size": context_size,
+        "prediction_objective": "all_positions",
+        "window_stride": context_size,
         "tokenizer": {
             "representation": tokenizer.representation,
             "pre_tokenize": tokenizer.pre_tokenize,
@@ -68,6 +69,15 @@ def load_checkpoint(path=DEFAULT_CHECKPOINT, device="cpu"):
     """Load portably on CPU, then move the model to the selected device."""
     device = select_device(device)
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    if "num_blocks" not in checkpoint["model_config"]:
+        # Earlier checkpoints stored one block directly on MiniGPT.
+        checkpoint["model_config"]["num_blocks"] = 1
+        checkpoint["model_state_dict"] = {
+            ("blocks.0." + key if key.startswith(
+                ("attention_block.", "ln1.", "ln2.", "mlp.")
+            ) else key): value
+            for key, value in checkpoint["model_state_dict"].items()
+        }
     model = MiniGPT(**checkpoint["model_config"])
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
@@ -82,6 +92,8 @@ def load_checkpoint(path=DEFAULT_CHECKPOINT, device="cpu"):
         key: checkpoint[key]
         for key in ("model_config", "context_size", "epoch", "validation_loss")
     }
+    metadata["prediction_objective"] = checkpoint.get("prediction_objective", "last_token_only")
+    metadata["window_stride"] = checkpoint.get("window_stride", 1)
     return model, tokenizer, metadata
 
 
@@ -106,20 +118,23 @@ def train_model(
         for contexts, targets in train_loader:
             contexts, targets = contexts.to(device), targets.to(device)
             optimiser.zero_grad()
-            loss = nn.functional.cross_entropy(model(contexts), targets)
+            logits = model(contexts)
+            loss = nn.functional.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
+            )
             if not torch.isfinite(loss):
                 raise ValueError("Training loss is not finite")
             loss.backward()
             optimiser.step()
-            total_loss += loss.item() * len(targets)
-            count += len(targets)
+            total_loss += loss.item() * targets.numel()
+            count += targets.numel()
 
         val_loss = evaluate(model, val_loader)
         if not math.isfinite(val_loss):
             raise ValueError("Validation loss is not finite")
         print(
-            f"Epoch {epoch} | Train Loss: {total_loss / count:.4f} | "
-            f"Validation Loss: {val_loss:.4f}", flush=True,
+            f"Epoch {epoch} | Train CE/token: {total_loss / count:.4f} | "
+            f"Validation CE/token: {val_loss:.4f}", flush=True,
         )
         if val_loss < best_loss:
             best_loss = val_loss

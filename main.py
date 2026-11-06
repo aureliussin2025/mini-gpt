@@ -58,7 +58,7 @@ def main():
         model, train_loader, val_loader, tokenizer, context_size,
         epochs=args.epochs, patience=3, checkpoint_path=args.checkpoint,
     )
-    print(f"Test Loss: {evaluate(model, test_loader):.4f}")
+    print(f"Test CE/token: {evaluate(model, test_loader):.4f}")
     for temperature in (1.0, 0.5, 2.0):
         print(f"Temperature {temperature}:")
         print(generate(

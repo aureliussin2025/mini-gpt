@@ -25,11 +25,11 @@ def test_split_isolation_and_dimensions():
     ):
         ids = tokenizer.encode(split)
         contexts, targets = dataset.tensors
-        assert contexts.shape == (len(ids) - 32, 32)
-        assert targets.shape == (len(ids) - 32,)
+        assert contexts.shape == ((len(ids) - 1) // 32, 32)
+        assert targets.shape == contexts.shape
         assert contexts.dtype == targets.dtype == torch.long
         assert contexts[0].tolist() == ids[:32]
-        assert targets.tolist() == ids[32:]
+        assert targets.tolist() == [ids[i + 1:i + 33] for i in range(0, len(ids) - 32, 32)]
 
 
 def test_short_split_is_rejected():
@@ -40,10 +40,14 @@ def test_short_split_is_rejected():
 def test_validation_weights_partial_batch():
     model = MiniGPT(10)
     contexts = torch.randint(0, 10, (5, 3))
-    targets = torch.tensor([0, 1, 2, 3, 4])
+    targets = torch.arange(15).reshape(5, 3) % 10
     loader = DataLoader(TensorDataset(contexts, targets), batch_size=2)
     with torch.no_grad():
-        expected = torch.nn.functional.cross_entropy(model(contexts), targets).item()
+        logits = model(contexts)
+        expected = sum(
+            torch.nn.functional.cross_entropy(logits[:, position], targets[:, position]).item()
+            for position in range(3)
+        ) / 3
     assert evaluate(model, loader) == pytest.approx(expected, abs=1e-6)
     assert model.training
 
@@ -64,6 +68,33 @@ def test_checkpoint_round_trip(tmp_path):
     assert metadata["epoch"] == 2
     assert metadata["validation_loss"] == 1.5
     assert metadata["model_config"]["attention_type"] == "multi"
+    assert metadata["prediction_objective"] == "all_positions"
+    assert metadata["window_stride"] == 32
+    assert metadata["model_config"]["num_blocks"] == 4
+    assert len(restored.blocks) == 4
+
+
+def test_legacy_one_block_checkpoint_loads_without_changing_predictions(tmp_path):
+    tokenizer = BPETokenizer().train("hello")
+    model = MiniGPT(len(tokenizer.vocab), attention_type="multi", num_blocks=1).eval()
+    path = tmp_path / "legacy.pth"
+    save_checkpoint(path, model, tokenizer, 32, 1, 2.0)
+    checkpoint = torch.load(path, weights_only=True)
+    del checkpoint["model_config"]["num_blocks"]
+    del checkpoint["prediction_objective"]
+    del checkpoint["window_stride"]
+    checkpoint["model_state_dict"] = {
+        key.removeprefix("blocks.0."): value
+        for key, value in checkpoint["model_state_dict"].items()
+    }
+    torch.save(checkpoint, path)
+    restored, _, metadata = load_checkpoint(path)
+    assert len(restored.blocks) == metadata["model_config"]["num_blocks"] == 1
+    assert metadata["prediction_objective"] == "last_token_only"
+    assert metadata["window_stride"] == 1
+    assert metadata["validation_loss"] == 2.0
+    contexts = torch.tensor([tokenizer.encode("hello")])
+    torch.testing.assert_close(restored(contexts), model(contexts))
 
 
 def test_early_stopping_restores_best_weights(tmp_path, monkeypatch):
@@ -72,7 +103,7 @@ def test_early_stopping_restores_best_weights(tmp_path, monkeypatch):
     tokenizer = BPETokenizer().train("ab", vocab_size=256)
     model = MiniGPT(256, attention_type="multi")
     loader = DataLoader(TensorDataset(
-        torch.tensor([[97, 98], [98, 97]]), torch.tensor([97, 98])
+        torch.tensor([[97, 98], [98, 97]]), torch.tensor([[98, 97], [97, 98]])
     ), batch_size=2)
     losses = iter([2.0, 1.0, 1.2, 1.3])
     states = []
@@ -101,8 +132,9 @@ def test_generation_keeps_ids_and_crops_context(monkeypatch):
 
     def fixed_prediction(context):
         seen.append(context.clone())
-        logits = torch.full((1, 256), float("-inf"))
-        logits[0, ord("b")] = 0
+        logits = torch.full((1, context.shape[1], 256), float("-inf"))
+        logits[0, :-1, ord("a")] = 0
+        logits[0, -1, ord("b")] = 0
         return logits
 
     monkeypatch.setattr(model, "forward", fixed_prediction)
@@ -125,8 +157,8 @@ def test_byte_decode_error_policy_and_generated_invalid_bytes(monkeypatch):
     model = MiniGPT(256)
 
     def invalid_byte(context):
-        logits = torch.full((1, 256), float("-inf"))
-        logits[0, 255] = 0
+        logits = torch.full((1, context.shape[1], 256), float("-inf"))
+        logits[0, :, 255] = 0
         return logits
 
     monkeypatch.setattr(model, "forward", invalid_byte)

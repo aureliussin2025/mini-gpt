@@ -34,7 +34,7 @@ def test_training_loading_generation_and_timing_on_device(device, tmp_path):
     tokenizer = BPETokenizer().train("ab", vocab_size=256)
     model = MiniGPT(256, attention_type="multi").to(device)
     contexts = torch.tensor([[97, 98], [98, 97]])
-    loader = DataLoader(TensorDataset(contexts, torch.tensor([97, 98])), batch_size=2)
+    loader = DataLoader(TensorDataset(contexts, torch.tensor([[98, 97], [97, 98]])), batch_size=2)
     path = tmp_path / "device.pth"
     train_model(model, loader, loader, tokenizer, 2, 1, 1, path)
     assert next(model.parameters()).device.type == device

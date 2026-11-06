@@ -9,10 +9,14 @@ def test_validation_loss_weights_partial_batch_and_restores_mode():
     torch.manual_seed(42)
     model = MiniGPT(10)
     contexts = torch.randint(0, 10, (5, 3))
-    targets = torch.tensor([1, 2, 3, 4, 5])
+    targets = torch.arange(15).reshape(5, 3) % 10
     loader = DataLoader(TensorDataset(contexts, targets), batch_size=2)
     with torch.no_grad():
-        expected = torch.nn.functional.cross_entropy(model(contexts), targets).item()
+        logits = model(contexts)
+        expected = sum(
+            torch.nn.functional.cross_entropy(logits[:, position], targets[:, position]).item()
+            for position in range(3)
+        ) / 3
     actual = validation_loss(model, loader)
     assert abs(actual - expected) < 1e-6
     assert model.training

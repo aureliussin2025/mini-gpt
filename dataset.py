@@ -26,23 +26,21 @@ def prepare_bpe_datasets(text, context_size=32):
         ))
     return tokenizer, tuple(datasets)
 
-#sliding window
 def create_X_and_y(encoded_tokens, context_size=3):
-    #setting up datasets
+    """Create full input chunks and one-token-shifted targets; drop the tail."""
+    if isinstance(context_size, bool) or not isinstance(context_size, int) or context_size < 1:
+        raise ValueError("context_size must be a positive integer")
+    if len(encoded_tokens) <= context_size:
+        raise ValueError("Not enough tokens for one complete input/target chunk")
     X = []
     y = []
 
-    #implementing sliding window to allow for context
-    for i in range(len(encoded_tokens) - context_size):
-
+    # A chunk needs one extra source token for the final next-token target.
+    for i in range(0, len(encoded_tokens) - context_size, context_size):
         window_size = context_size + 1
-
-        #slicing into 4 elements
         window_of_encoded_tokens = encoded_tokens[i:i + window_size]
-        
-        #further slicing to 3 and 1
         X.append(window_of_encoded_tokens[:-1])
-        y.append(window_of_encoded_tokens[-1])
+        y.append(window_of_encoded_tokens[1:])
 
     X = np.array(X)
     y = np.array(y)
